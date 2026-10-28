@@ -1,0 +1,10 @@
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+.claude/
+*.tmp
+*.new
+
+# caches rebuilt by the scripts in about a minute (~29 MB each)
+results/**/reduced_model_*.npz
+results/**/fba_growth_*.npy

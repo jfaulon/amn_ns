@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Summary bar chart: R² on test media of FBA, linear regression, MLP and
+Summary bar chart: R² on test media of FBA, MLR, MLP and
 AMN-NS for the low-data
 learning curve (20, 40, 80 training media), the simple-to-complex split
 (130 training media with <= 12 variable nutrients) and random 5-fold CV
@@ -12,14 +12,14 @@ Reads the prediction files written by amn_nullspace.py and fba_lambda.py:
     results/extrap/pred_random_nslin_s*.csv
     results/optim/pred_A_mlp_s*.csv                  (MLP, random CV)
     results/fba_lambda/fba_growth_by_lambda.csv
-Linear regression (ordinary least squares on the presence vector) is fitted
+MLR (multiple linear regression, least squares on the presence vector) is fitted
 here, on the same splits as amn_nullspace.py (seeds 1-3).
 R² is collated per seed (one R² over all test predictions of a run); bars
 are the mean over seeds and error bars the sd. FBA has no training and no
 seed: on random CV and the learning curve (whose test folds together cover
 all 280 media) it is the published protocol (best lambda over all media),
 on the complex split lambda is chosen on the 130 training media. The
-complex split does not depend on the seed, so linear regression has no sd
+complex split does not depend on the seed, so MLR has no sd
 there.
 
 Writes results/summary/r2_summary.csv and r2_summary.png.
@@ -66,7 +66,7 @@ train = np.setdiff1d(np.arange(len(y)), test)
 lam = max(G, key=lambda c: r2(y[train], G[c].values[train]))
 fba_le12 = r2(y[test], G[lam].values[test])
 
-# linear regression on the splits of amn_nullspace.py
+# MLR on the splits of amn_nullspace.py
 D = np.load('Dataset_input/Ecoli/iML1515EXP.npz')
 X, Yd = D['X'], D['Y'][:, 0]
 
@@ -100,7 +100,7 @@ for label, n, mlp, ns, fold, fba in tests:
     test_name = label.split('\n')[0]
     rows.append(dict(test=test_name, n_train=n, model='FBA', r2_mean=fba, r2_sd=np.nan, n_seeds=0))
     v = np.array([ols(n, s) for s in (1, 2, 3)]) if n != 130 else np.array([ols(n, 1)])
-    rows.append(dict(test=test_name, n_train=n, model='Linear regression', r2_mean=v.mean(),
+    rows.append(dict(test=test_name, n_train=n, model='MLR', r2_mean=v.mean(),
                      r2_sd=v.std(ddof=1) if len(v) > 1 else np.nan, n_seeds=len(v) if len(v) > 1 else 0))
     for model, pattern in (('MLP', mlp), ('AMN-NS', ns)):
         v = seeds(pattern, fold)
@@ -111,7 +111,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 df.round(4).to_csv(OUT / 'r2_summary.csv', index=False)
 print(df.round(3).to_string(index=False))
 
-colors = {'FBA': '#F5A98A', 'Linear regression': '#C9B3EC', 'MLP': '#86B6EF', 'AMN-NS': '#7FD3B2'}
+colors = {'FBA': '#F5A98A', 'MLR': '#C9B3EC', 'MLP': '#86B6EF', 'AMN-NS': '#7FD3B2'}
 fig, ax = plt.subplots(figsize=(6.5, 3.4), dpi=300)
 x = np.arange(len(tests))
 w = 0.2

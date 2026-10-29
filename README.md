@@ -67,6 +67,7 @@ the GEM) and the GEM as `<name>.xml`; pass `--trainingfile <path/name>`
 │   ├── nullspace               first AMN-NS comparison (single seed, ReLU encoder)
 │   ├── optim                   multi-seed and nested-tuning runs (random CV)
 │   ├── extrap                  simple-to-complex and low-data splits
+│   ├── tune                    nested tuning of beta, uptake bound and epochs
 │   ├── fba_lambda              FBA growth for every lambda and medium
 │   ├── ablation                lambda ablation
 │   └── learning_curve          learning-curve logs
@@ -198,9 +199,8 @@ mean ± sd over training seeds (3 seeds; 5 for AMN-NS on the
 simple-to-complex split); "ensemble" is the R² of the prediction averaged
 over seeds. Baselines: linear regression (ordinary least squares on the
 presence vector), MLP (1 hidden layer of 1,000 ReLU units, scikit-learn),
-AMN-NS with a ReLU hidden layer, and FBA. AMN-NS settings (β = 0.1, u = 10)
-were confirmed by nested selection inside each training fold
-(β ∈ {0.1, 1, 10}, chosen β = 0.1 in all 15 folds).
+AMN-NS with a ReLU hidden layer, and FBA. AMN-NS uses fixed settings
+(β = 0.1, u = 10, 100 epochs); tuning them does not help (see *Tuning* below).
 
 **Random 5-fold CV** (interpolation: test media resemble training media).
 
@@ -246,19 +246,35 @@ stoichiometry and medium-dependent bounds produce the nonlinear growth
 response. With a ReLU hidden layer the network can fit the training media
 without relying on the constraints, and it extrapolates worse.
 
+*Tuning.* Nested selection inside each training fold (`--tune`; grid
+β ∈ {0.03, 0.1, 0.3} × u ∈ {5, 6.5, 10} × {100, 200} epochs, seed 1,
+`results/tune/run.sh`) gives, against the fixed settings with the same seed:
+
+| Split | Fixed settings | Tuned | Settings chosen |
+|---|---|---|---|
+| Random 5-fold CV | 0.775 | 0.797 | β = 0.03 in 3 of 5 folds; u = 10 in 3, u = 5 in 2 |
+| ≤ 10 nutrients | 0.537 | 0.381 | β = 0.03, u = 10, 200 epochs |
+| ≤ 12 nutrients | 0.661 | 0.558 | β = 0.03, u = 6.5, 200 epochs |
+| ≤ 14 nutrients | 0.686 | 0.600 | β = 0.03, u = 10, 100 epochs |
+
+The gain on random CV is within the seed-to-seed spread, and the settings
+that validate best on media similar to the training media extrapolate worse
+to richer media. No uptake bound is consistently preferred, so u = 10 is
+kept for every compound. An earlier selection over β ∈ {0.1, 1, 10} with the
+ReLU encoder (`results/optim`) chose β = 0.1 in all 15 folds.
+
 *Feasibility.* SV = 0 holds to machine precision. The residual bound
 violation r after K = 20 steps is about 0.2 (mmol gDW⁻¹ h⁻¹, norm over
 2,712 fluxes). Running more projection steps at prediction time lowers r
-(K = 500: r ≈ 0.11) but also lowers R² (by 0.04–0.10), and a larger β is
-never selected: enforcing the bounds more tightly costs accuracy, which
+(K = 500: r ≈ 0.11) but also lowers R² (by 0.04–0.10), and tuning favours a
+small β (0.03): enforcing the bounds more tightly costs accuracy, which
 suggests that the bounds (u = 10, u_O₂ = 20) are only approximately
 compatible with the measured growth rates.
 
 ### 5.3 Usage
 
-All scripts run from the repository root with the Python that has
-TensorFlow and COBRApy installed (on this machine
-`/usr/local/bin/python3`, Python 3.10.6).
+All scripts run from the repository root in the `amn_ns` environment
+(section 2).
 
 ```bash
 # AMN-NS with random 5-fold CV (--seed sets folds and initialisation)
@@ -268,6 +284,9 @@ python amn_nullspace.py --model ns --split complex --tag ns_complex --plateau --
 python amn_nullspace.py --model ns --split lowdata --tag ns_lowdata --plateau --epochs 100
 # ReLU hidden layer instead of the default affine encoder
 python amn_nullspace.py --model ns --split random --tag ns_relu --encoder relu --plateau --epochs 100
+# nested tuning inside each training fold
+python amn_nullspace.py --model ns --split random --tag ns_tune --plateau --tune \
+    --betas 0.03 0.1 0.3 --uptakes 5 6.5 10 --epochs-grid 100 200
 # baselines on the same splits: --model mlp | fba
 python amn_nullspace.py --model mlp --split random --tag mlp_random
 # FBA with the published protocol (uptake bound lambda for every compound present)

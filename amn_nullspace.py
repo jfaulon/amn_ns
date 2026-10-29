@@ -37,8 +37,8 @@ Splits:
 --tune selects hyperparameters inside each training fold (nested): 20 % of the
 training media are held out for validation, every grid configuration is fitted
 on the other 80 % and scored by validation MSE, and the best one is refitted
-on the whole training fold. Grids: --betas x --uptakes (ns), --alphas x
---hiddens (mlp).
+on the whole training fold. Grids: --betas x --uptakes x --epochs-grid (ns),
+--alphas x --hiddens (mlp).
 
 --k-eval re-runs the projection of the trained network with other numbers of
 Dykstra steps at prediction time (columns y_pred_K<k>, box_viol_K<k>).
@@ -98,6 +98,8 @@ ap.add_argument('--betas', type=float, nargs='+', default=[0.03, 0.1, 0.3])
 ap.add_argument('--uptakes', type=float, nargs='+', default=[10.0, 20.0])
 ap.add_argument('--alphas', type=float, nargs='+', default=[1e-4, 1e-2, 1.0])
 ap.add_argument('--hiddens', type=int, nargs='+', default=[256, 1000])
+ap.add_argument('--epochs-grid', type=int, nargs='+', default=None,
+                help='with --tune: AMN-NS epochs to select from (default: --epochs)')
 ap.add_argument('--only', nargs='+', default=None,
                 help='run only these fold names (e.g. fold0)')
 ap.add_argument('--seed', type=int, default=1)
@@ -277,7 +279,7 @@ def fit_ns(tr, te, cfg, seed):
     model, v0_model = build_ns(red, cfg)
     cb = [tf.keras.callbacks.ReduceLROnPlateau('loss', factor=0.5, patience=10,
                                                min_lr=1e-5)] if args.plateau else []
-    epochs = args.epochs
+    epochs = cfg['epochs']
     if args.split == 'lowdata':  # same number of gradient steps as a full 5-fold training set
         epochs = int(round(epochs * 0.8 * len(X) / len(tr)))
     model.fit(X[tr], [y[tr], np.zeros(len(tr))], epochs=epochs,
@@ -304,8 +306,9 @@ def configs():
     """Hyperparameter grid (one configuration when not tuning)."""
     if args.model == 'ns':
         betas, ups = (args.betas, args.uptakes) if args.tune else ([args.beta], [args.uptake])
-        return [dict(param=args.param, encoder=args.encoder, beta=b, uptake=u)
-                for b, u in itertools.product(betas, ups)]
+        eps = args.epochs_grid if args.tune and args.epochs_grid else [args.epochs]
+        return [dict(param=args.param, encoder=args.encoder, beta=b, uptake=u, epochs=e)
+                for b, u, e in itertools.product(betas, ups, eps)]
     if args.model == 'mlp':
         alphas, hids = (args.alphas, args.hiddens) if args.tune else ([args.alpha], [args.hidden])
         return [dict(alpha=a, hidden=h) for a, h in itertools.product(alphas, hids)]

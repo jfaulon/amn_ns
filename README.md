@@ -36,8 +36,11 @@ experiment. Excerpt of `Dataset_input/Ecoli/iML1515EXP.csv` (51 compounds,
   AMN-NS uses it for the minimal-medium compounds; the bounds of the
   variable compounds and of O₂ are options of the scripts (`--uptake`,
   `--o2`).
-- **Rows 4+:** one medium per row; 1 = compound present, 0 = absent;
-  growth rate in h⁻¹ (0.07 to 1.05 here).
+- **Rows 4+:** one medium per row; 1 = compound present, 0 = absent.
+- **`GR_AVG`, last column:** the experimentally measured growth rate
+  (h⁻¹; 0.07 to 1.05 here), averaged over the replicate experiments when a
+  medium was measured more than once. It is the target the models are
+  trained on and evaluated against.
 
 The scripts read the training set as `<name>.npz` (built from the CSV and
 the GEM) and the GEM as `<name>.xml`; pass `--trainingfile <path/name>`
@@ -65,7 +68,7 @@ the GEM) and the GEM as `<name>.xml`; pass `--trainingfile <path/name>`
 ├── learning_curve_unified.py   MLR, MLP, AMN_QP learning curves
 ├── plot_r2_summary.py          summary table and bar chart of section 5.2
 ├── results
-│   ├── nullspace               first AMN-NS comparison (single seed, ReLU encoder)
+│   ├── nullspace               first AMN-NS comparison (single seed, earlier version)
 │   ├── optim                   multi-seed and nested-tuning runs (random CV)
 │   ├── extrap                  simple-to-complex and low-data splits
 │   ├── tune                    nested tuning of beta, uptake bound and epochs
@@ -133,23 +136,27 @@ metabolites.
    coordinates in the null space of S, and hence to an initial flux vector
    that is already at steady state:
    V⁰ = N (W₂ (W₁ x + b₁) + b₂), with 1,000 hidden units, no activation
-   function and dropout 0.25 on the hidden layer. V⁰ is therefore an affine
-   function of the medium: all the nonlinearity of the growth response comes
+   function and dropout 0.25 on the hidden layer.
+   **N** is a fixed matrix (reactions × null-space dimension) whose columns
+   are an orthonormal basis of the null space of the stoichiometric matrix
+   S, i.e. SN = 0 and NᵀN = I. It is computed once, before training, from
+   the singular value decomposition of S: its columns are the right
+   singular vectors of S whose singular values are zero, up to numerical
+   tolerance (`scipy.linalg.null_space`). For iML1515, N is 2,712 × 1,330.
+   Any vector Nc satisfies S(Nc) = 0, so the network only has to output the
+   coordinates c = W₂ (W₁ x + b₁) + b₂ of V⁰ in this basis.
+   V⁰ is therefore an affine function of the medium: all the nonlinearity of the growth response comes
    from the mechanistic layer (the hidden layer over-parametrises the affine
    map, and dropout regularises it). The weights W₁ (1,000 × number of medium
    components), b₁, W₂ (null-space dimension × 1,000) and b₂ are the **only
    trainable parameters** of AMN-NS (≈ 1.4 million for iML1515: 28 medium
-   components, null-space dimension 1,330). A ReLU hidden layer
-   (`--encoder relu`) fits the training media more closely but extrapolates
-   worse (section 5.2).
+   components, null-space dimension 1,330).
 2. **Mechanistic layer (fixed, no trainable parameters).** It turns V⁰ into
    a flux vector V that satisfies the GEM constraints, while staying as
    close as possible to V⁰. It uses two fixed operations:
-   - **NNᵀ, the mass-balance projector.** An orthonormal basis N of the
-     null space of S (SN = 0) is computed once from S by singular value
-     decomposition (for iML1515, N is 2,712 × 1,330). NNᵀ is a fixed square
-     matrix (reactions × reactions): for any flux vector V, NNᵀV is the closest flux
-     vector that is at steady state, S(NNᵀV) = 0 exactly [6].
+   - **NNᵀ, the mass-balance projector.** With N as above, NNᵀ is a fixed
+     square matrix (reactions × reactions): for any flux vector V, NNᵀV is
+     the closest flux vector that is at steady state, S(NNᵀV) = 0 exactly [6].
    - **clip, the bound operator.** clip(V, lb, ub(x)) sets every flux below
      its lower bound to lb and every flux above its upper bound to ub(x).
      Because ub(x) depends on the medium, this is where nutrient
@@ -176,14 +183,17 @@ metabolites.
    the bounds hold only approximately, with residual violation
    r = ‖clip(V, lb, ub(x)) − V‖.
 
-The predicted growth rate is the biomass flux, μ̂ = Pout V. The mechanistic layer
+The predicted growth rate is the biomass flux, $\hat{\mu} = P_{out} V$,
+where the row vector $P_{out}$ selects the biomass reaction. The mechanistic layer
 contains only matrix products and clips, so gradients pass through it, and
 training adjusts W₁, b₁, W₂, b₂ so that the *constrained* flux vector
 predicts growth. The equality constraints are satisfied by construction
 (reparametrisation), in the spirit of hard-constrained neural
 networks [8,9]. The loss, for a measured growth rate μ, is
 
-    L = (μ̂ − μ)² + β r²
+```math
+L = (\hat{\mu} - \mu)^2 + \beta\, r^2
+```
 
 where β weights the remaining bound violation.
 
@@ -198,10 +208,9 @@ maximum.
 
 R² is collated: one R² over all test predictions of a run. Values are
 mean ± sd over training seeds (3 seeds; 5 for AMN-NS on the
-simple-to-complex split); "ensemble" is the R² of the prediction averaged
-over seeds. Baselines: linear regression (ordinary least squares on the
-presence vector), MLP (1 hidden layer of 1,000 ReLU units, scikit-learn),
-AMN-NS with a ReLU hidden layer, and FBA. AMN-NS uses fixed settings
+simple-to-complex split). Baselines: linear regression (ordinary least
+squares on the presence vector), MLP (1 hidden layer of 1,000 ReLU units,
+scikit-learn) and FBA. AMN-NS uses fixed settings
 (β = 0.1, u = 10, 100 epochs); tuning them does not help (see *Tuning* below).
 
 **Random 5-fold CV** (interpolation: test media resemble training media).
@@ -211,8 +220,13 @@ AMN-NS with a ReLU hidden layer, and FBA. AMN-NS uses fixed settings
 | FBA, published protocol [1] (uptake bound λ for every compound present, best λ = 6.5) | 0.144 | – |
 | Linear regression | 0.618 | – |
 | MLP | 0.746 ± 0.009 | 0.785 |
-| AMN-NS, ReLU hidden layer (2 seeds) | 0.786 | – |
 | **AMN-NS** | **0.776 ± 0.020** | **0.797** |
+
+*Ensemble:* the models trained with the 3 seeds are combined by averaging
+their predictions for each test medium, and R² is computed on these
+averaged predictions. Averaging cancels part of the seed-to-seed variation,
+so the ensemble scores higher than the individual seeds. FBA and linear
+regression are deterministic and have no ensemble.
 
 FBA alone has a Pearson correlation of only 0.52 with the measured growth
 rates for every λ: scaling λ rescales the predictions without changing how
@@ -223,30 +237,28 @@ media are ranked. Choosing λ on the training folds only gives the same
 t of the 28 variable nutrients; the test set is every richer medium, so no
 test medium resembles a training medium in size.
 
-| Training media (t) | n train / test | Linear regression | MLP | AMN-NS, ReLU | **AMN-NS** |
-|---|---|---|---|---|---|
-| ≤ 10 nutrients | 75 / 205 | **0.545** | 0.429 ± 0.160 | 0.384 ± 0.049 | 0.409 ± 0.086 |
-| ≤ 12 nutrients | 130 / 150 | 0.526 | 0.552 ± 0.021 | 0.236 ± 0.100 | **0.655 ± 0.021** |
-| ≤ 14 nutrients | 164 / 116 | 0.547 | 0.614 ± 0.029 | 0.505 ± 0.058 | **0.645 ± 0.055** |
+| Training media (t) | n train / test | Linear regression | MLP | **AMN-NS** |
+|---|---|---|---|---|
+| ≤ 10 nutrients | 75 / 205 | **0.545** | 0.429 ± 0.160 | 0.409 ± 0.086 |
+| ≤ 12 nutrients | 130 / 150 | 0.526 | 0.552 ± 0.021 | **0.655 ± 0.021** |
+| ≤ 14 nutrients | 164 / 116 | 0.547 | 0.614 ± 0.029 | **0.645 ± 0.055** |
 
 **Low-data learning curve.** Same test folds as the random split, with only
 n media drawn from each training fold (AMN-NS epochs scaled so that every n
 gets the same number of gradient steps).
 
-| n training media | MLP | AMN-NS, ReLU | **AMN-NS** |
-|---|---|---|---|
-| 20 | 0.160 ± 0.114 | 0.119 ± 0.181 | **0.178 ± 0.105** |
-| 40 | 0.431 ± 0.064 | 0.400 ± 0.074 | **0.501 ± 0.037** |
-| 80 | 0.645 ± 0.013 | 0.627 ± 0.013 | **0.669 ± 0.010** |
+| n training media | MLP | **AMN-NS** |
+|---|---|---|
+| 20 | 0.160 ± 0.114 | **0.178 ± 0.105** |
+| 40 | 0.431 ± 0.064 | **0.501 ± 0.037** |
+| 80 | 0.645 ± 0.013 | **0.669 ± 0.010** |
 
-AMN-NS matches the ReLU variant on interpolation and is the best model
-when extrapolating to richer media (with ≥ 130 training media) and when
-data are scarce (≥ 40 media). Linear regression alone does not extrapolate
+AMN-NS is the best model on interpolation, when extrapolating to richer
+media (with ≥ 130 training media) and when data are scarce (≥ 40 media). Linear regression alone does not extrapolate
 as well, so the gain comes from the mechanistic layer: the network only
 proposes a flux vector that is affine in the medium, and the
 stoichiometry and medium-dependent bounds produce the nonlinear growth
-response. With a ReLU hidden layer the network can fit the training media
-without relying on the constraints, and it extrapolates worse.
+response.
 
 Summary of the three tests (`plot_r2_summary.py`; error bars: sd over
 seeds; FBA has no training and no seed):
@@ -267,8 +279,7 @@ seeds; FBA has no training and no seed):
 The gain on random CV is within the seed-to-seed spread, and the settings
 that validate best on media similar to the training media extrapolate worse
 to richer media. No uptake bound is consistently preferred, so u = 10 is
-kept for every compound. An earlier selection over β ∈ {0.1, 1, 10} with the
-ReLU encoder (`results/optim`) chose β = 0.1 in all 15 folds.
+kept for every compound.
 
 *Feasibility.* SV = 0 holds to machine precision. The residual bound
 violation r after K = 20 steps is about 0.2 (mmol gDW⁻¹ h⁻¹, norm over
@@ -289,8 +300,6 @@ python amn_nullspace.py --model ns --split random --tag ns_random --plateau --ep
 # simple-to-complex split and low-data curve
 python amn_nullspace.py --model ns --split complex --tag ns_complex --plateau --epochs 100
 python amn_nullspace.py --model ns --split lowdata --tag ns_lowdata --plateau --epochs 100
-# ReLU hidden layer instead of the default affine encoder
-python amn_nullspace.py --model ns --split random --tag ns_relu --encoder relu --plateau --epochs 100
 # nested tuning inside each training fold
 python amn_nullspace.py --model ns --split random --tag ns_tune --plateau --tune \
     --betas 0.03 0.1 0.3 --uptakes 5 6.5 10 --epochs-grid 100 200

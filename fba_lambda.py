@@ -44,6 +44,7 @@ param = Neural_Model(model_type='AMN_QP', scaler=True, objective=True,
 X, Y = model_input(param, verbose=False)
 y = Y[:, 0]
 m = param.cobramodel
+m.solver.configuration.timeout = 30  # seconds; a stalled LP counts as no growth
 ids = [r.id for r in m.reactions]
 var_ids = [ids[j] for j in np.argmax(param.Pin, axis=1)]  # one per X column
 min_ids = [r for r in param.medium if r not in var_ids]   # always ON

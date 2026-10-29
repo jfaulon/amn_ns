@@ -60,10 +60,14 @@ the GEM) and the GEM as `<name>.xml`; pass `--trainingfile <path/name>`
 │   └── iML1515EXP.xml          GEM iML1515 (irreversible, SBML)
 ├── Library                     data loading and the penalty-based AMN (AMN_QP)
 ├── amn_nullspace.py            AMN-NS and baselines (MLP, AMN_QP, FBA)
+├── fba_lambda.py               FBA baseline with the published lambda protocol
 ├── ablation_sv.py              AMN_QP with constraint-loss weight lambda
 ├── learning_curve_unified.py   MLR, MLP, AMN_QP learning curves
 ├── results
-│   ├── nullspace               AMN-NS comparison (predictions per fold)
+│   ├── nullspace               first AMN-NS comparison (single seed, ReLU encoder)
+│   ├── optim                   multi-seed and nested-tuning runs (random CV)
+│   ├── extrap                  simple-to-complex and low-data splits
+│   ├── fba_lambda              FBA growth for every lambda and medium
 │   ├── ablation                lambda ablation
 │   └── learning_curve          learning-curve logs
 ├── README.md
@@ -78,7 +82,9 @@ conda activate amn_ns
 ```
 
 Tested with Python 3.10.6, TensorFlow 2.15, COBRApy 0.29, scikit-learn 1.6
-on macOS (CPU).
+on macOS (CPU). The code hides the GPU: with tensorflow-metal 1.2.0 on Apple
+GPUs, compiled Keras models silently drop the activation between dense
+layers, so results would be wrong.
 
 ## 3. Usage
 
@@ -87,11 +93,11 @@ See [5.3 Usage](#53-usage). Every script runs from the repository root.
 ## 4. Citation
 
 The AMN framework: Faure L, Mollet B, Liebermeister W, Faulon J-L.
-*Nat Commun* 14, 4669 (2023). AMN-NS: manuscript in preparation.
+*Nat Commun* 14, 4669 (2023).
 
 ## 5. AMN-NS: AMN with exact mass balance
 
-### 5.1 Summary (manuscript-ready)
+### 5.1 Summary
 
 Artificial Metabolic Networks (AMNs) couple a neural network that maps
 medium composition to a flux distribution with a mechanistic layer derived
@@ -120,13 +126,19 @@ metabolites.
 
 *Architecture: what is learned and what is fixed.* AMN-NS has two parts.
 
-1. **Neural layer (learned).** A dense network maps the medium x to an
-   initial flux vector:
-   V⁰ = W₂ · ReLU(W₁ x + b₁) + b₂, with 1,000 hidden units and dropout 0.25.
-   The weights W₁ (1,000 × number of medium components), b₁,
-   W₂ (number of reactions × 1,000) and b₂ are the **only trainable
-   parameters** of AMN-NS (≈ 2.7 million for iML1515: 28 medium components,
-   2,712 reactions).
+1. **Neural layer (learned).** A dense network maps the medium x to
+   coordinates in the null space of S, and hence to an initial flux vector
+   that is already at steady state:
+   V⁰ = N (W₂ (W₁ x + b₁) + b₂), with 1,000 hidden units, no activation
+   function and dropout 0.25 on the hidden layer. V⁰ is therefore an affine
+   function of the medium: all the nonlinearity of the growth response comes
+   from the mechanistic layer (the hidden layer over-parametrises the affine
+   map, and dropout regularises it). The weights W₁ (1,000 × number of medium
+   components), b₁, W₂ (null-space dimension × 1,000) and b₂ are the **only
+   trainable parameters** of AMN-NS (≈ 1.4 million for iML1515: 28 medium
+   components, null-space dimension 1,330). A ReLU hidden layer
+   (`--encoder relu`) fits the training media more closely but extrapolates
+   worse (section 5.2).
 2. **Mechanistic layer (fixed, no trainable parameters).** It turns V⁰ into
    a flux vector V that satisfies the GEM constraints, while staying as
    close as possible to V⁰. It uses two fixed operations:
@@ -179,42 +191,68 @@ measured growth rate feasible. For the *E. coli* dataset, u = 10 and
 u_O₂ = 20 do; with u_O₂ = 6.5, 165 of the 280 measured rates exceed the FBA
 maximum.
 
-### 5.2 Results (E. coli, 280 media, iML1515)
+### 5.2 Results (*E. coli*, 280 media, iML1515)
 
-Single seed. AMN-NS settings were selected on fold 0 of the random split.
+R² is collated: one R² over all test predictions of a run. Values are
+mean ± sd over training seeds (3 seeds; 5 for AMN-NS on the
+simple-to-complex split); "ensemble" is the R² of the prediction averaged
+over seeds. Baselines: linear regression (ordinary least squares on the
+presence vector), MLP (1 hidden layer of 1,000 ReLU units, scikit-learn),
+AMN-NS with a ReLU hidden layer, and FBA. AMN-NS settings (β = 0.1, u = 10)
+were confirmed by nested selection inside each training fold
+(β ∈ {0.1, 1, 10}, chosen β = 0.1 in all 15 folds).
 
-**Random 5-fold CV.** Collated R²: one R² over the 280 test predictions
-(each medium is tested once).
+**Random 5-fold CV** (interpolation: test media resemble training media).
 
-| Model | R² |
-|---|---|
-| MLP (1×1000, sklearn) | 0.747 |
-| AMN, penalty-based (`AMN_QP`) | 0.742 |
-| **AMN-NS** | **0.795** |
-| FBA alone (max growth, same bounds) | −22.1 |
+| Model | R² | Ensemble |
+|---|---|---|
+| FBA, published protocol [1] (uptake bound λ for every compound present, best λ = 6.5) | 0.144 | – |
+| Linear regression | 0.618 | – |
+| MLP | 0.746 ± 0.009 | 0.785 |
+| AMN-NS, ReLU hidden layer (2 seeds) | 0.786 | – |
+| **AMN-NS** | **0.776 ± 0.020** | **0.797** |
 
-**Leave-nutrient-family-out.** The 28 variable nutrients form 14 families
-with identical presence (e.g. Ile/Leu/Val). For each family, the test set is
-every medium containing it, and the model is trained on media without it, so
-a medium is tested once per family it contains. Because of these repeats, no
-single R² is canonical; three summaries are given.
+FBA alone has a Pearson correlation of only 0.52 with the measured growth
+rates for every λ: scaling λ rescales the predictions without changing how
+media are ranked. Choosing λ on the training folds only gives the same
+λ = 6.5 and R² = 0.144.
 
-| Model | Median R² over families | Pooled R² (1,765 test predictions) | R² on per-medium mean prediction | Families best of 3 |
-|---|---|---|---|---|
-| MLP | 0.34 | −0.00 | 0.34 | 4 |
-| AMN, penalty-based | 0.27 | 0.01 | **0.50** | 3 |
-| **AMN-NS** | **0.40** | **0.10** | 0.41 | **7** |
-| FBA alone | — | −21.0 | −22.1 | — |
+**Simple-to-complex split** (extrapolation). Training media contain at most
+t of the 28 variable nutrients; the test set is every richer medium, so no
+test medium resembles a training medium in size.
 
-AMN-NS beats the penalty-based AMN in 11 of the 14 families. Glucose,
-xylose and succinate are not extrapolated by any model (R² from −0.7 to
-−8.9); without these three families the per-medium R² is 0.57 (MLP), 0.61
-(AMN) and 0.61 (AMN-NS). In this split the input weights of a held-out
-nutrient are never trained, so any gain must come from the mechanistic
-layer; the gains over MLP are consistent but modest.
+| Training media (t) | n train / test | Linear regression | MLP | AMN-NS, ReLU | **AMN-NS** |
+|---|---|---|---|---|---|
+| ≤ 10 nutrients | 75 / 205 | **0.545** | 0.429 ± 0.160 | 0.384 ± 0.049 | 0.409 ± 0.086 |
+| ≤ 12 nutrients | 130 / 150 | 0.526 | 0.552 ± 0.021 | 0.236 ± 0.100 | **0.655 ± 0.021** |
+| ≤ 14 nutrients | 164 / 116 | 0.547 | 0.614 ± 0.029 | 0.505 ± 0.058 | **0.645 ± 0.055** |
 
-FBA alone overestimates growth because the bounds are only upper limits.
-AMN-NS learns where within F(x) the cell actually operates.
+**Low-data learning curve.** Same test folds as the random split, with only
+n media drawn from each training fold (AMN-NS epochs scaled so that every n
+gets the same number of gradient steps).
+
+| n training media | MLP | AMN-NS, ReLU | **AMN-NS** |
+|---|---|---|---|
+| 20 | 0.160 ± 0.114 | 0.119 ± 0.181 | **0.178 ± 0.105** |
+| 40 | 0.431 ± 0.064 | 0.400 ± 0.074 | **0.501 ± 0.037** |
+| 80 | 0.645 ± 0.013 | 0.627 ± 0.013 | **0.669 ± 0.010** |
+
+AMN-NS matches the ReLU variant on interpolation and is the best model
+when extrapolating to richer media (with ≥ 130 training media) and when
+data are scarce (≥ 40 media). Linear regression alone does not extrapolate
+as well, so the gain comes from the mechanistic layer: the network only
+proposes a flux vector that is affine in the medium, and the
+stoichiometry and medium-dependent bounds produce the nonlinear growth
+response. With a ReLU hidden layer the network can fit the training media
+without relying on the constraints, and it extrapolates worse.
+
+*Feasibility.* SV = 0 holds to machine precision. The residual bound
+violation r after K = 20 steps is about 0.2 (mmol gDW⁻¹ h⁻¹, norm over
+2,712 fluxes). Running more projection steps at prediction time lowers r
+(K = 500: r ≈ 0.11) but also lowers R² (by 0.04–0.10), and a larger β is
+never selected: enforcing the bounds more tightly costs accuracy, which
+suggests that the bounds (u = 10, u_O₂ = 20) are only approximately
+compatible with the measured growth rates.
 
 ### 5.3 Usage
 
@@ -223,11 +261,17 @@ TensorFlow and COBRApy installed (on this machine
 `/usr/local/bin/python3`, Python 3.10.6).
 
 ```bash
-# AMN-NS on random CV and leave-nutrient-family-out
-python amn_nullspace.py --model ns --split random   --tag ns_random   --plateau --epochs 100
-python amn_nullspace.py --model ns --split nutrient --tag ns_nutrient --plateau --epochs 100
-# baselines on the same splits: --model mlp | amn | fba
+# AMN-NS with random 5-fold CV (--seed sets folds and initialisation)
+python amn_nullspace.py --model ns --split random --tag ns_random --plateau --epochs 100
+# simple-to-complex split and low-data curve
+python amn_nullspace.py --model ns --split complex --tag ns_complex --plateau --epochs 100
+python amn_nullspace.py --model ns --split lowdata --tag ns_lowdata --plateau --epochs 100
+# ReLU hidden layer instead of the default affine encoder
+python amn_nullspace.py --model ns --split random --tag ns_relu --encoder relu --plateau --epochs 100
+# baselines on the same splits: --model mlp | fba
 python amn_nullspace.py --model mlp --split random --tag mlp_random
+# FBA with the published protocol (uptake bound lambda for every compound present)
+python fba_lambda.py
 # another organism or dataset (GEM <path/name>.xml + training set <path/name>.npz)
 python amn_nullspace.py --model ns --split random --tag my_ns --plateau --epochs 100 \
     --trainingfile <path/name> --o2-id <O2 uptake id> \
@@ -243,7 +287,8 @@ model and the FBA growth rates are cached in `results/nullspace/`.
 |---|---|
 | `learning_curve_unified.py` | MLR, MLP and AMN learning curves (10–100 % of training data) on identical folds |
 | `ablation_sv.py` | AMN with constraint-loss weight λ ∈ {0, 1, 100, 1000}; reports R² and ‖SV‖ |
-| `amn_nullspace.py` | AMN-NS and baselines on random and leave-nutrient-family-out splits |
+| `amn_nullspace.py` | AMN-NS and baselines (MLP, FBA): random 5-fold CV, simple-to-complex and low-data splits, nested tuning (`--tune`) |
+| `fba_lambda.py` | FBA baseline of [1]: scan of the uptake bound λ, best and cross-validated R² |
 
 ### 5.4 References
 

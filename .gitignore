@@ -8,3 +8,6 @@ __pycache__/
 # caches rebuilt by the scripts in about a minute (~29 MB each)
 results/**/reduced_model_*.npz
 results/**/fba_growth_*.npy
+
+# runs made with the tensorflow-metal GPU bug (linear network, see README)
+results/**/gpu_bug/

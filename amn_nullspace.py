@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """
-AMN with exact mass balance (null-space projection) vs MLP, AMN-light and FBA,
-on random CV and on leave-nutrient-out splits.
+AMN with exact mass balance (null-space projection) vs MLP, AMN_QP and FBA,
+on random CV, leave-nutrient-out, simple-to-complex and low-data splits.
 
-AMN-NS: X -> Dense(1000, relu) -> Dropout -> V0                    (learned)
+AMN-NS: X -> Dense(1000) -> Dropout -> V0                          (learned)
+             --encoder linear : no activation, V0 is affine in X (default)
+             --encoder relu   : ReLU hidden layer
+             --param null : V0 = N z, z = Dense(null dim)  (V0 already balanced, default)
              --param flux : V0 = Dense(n_rxn)
-             --param null : V0 = N z, z = Dense(null dim)  (V0 already balanced)
         -> K Dykstra steps alternating two fixed projections (no weights)
               NN^T   : x -> N N^T x          (SV = 0 exactly)
               clip   : clip(x, lb, ub(X))   (V >= 0, ATPM >= 6.86,
@@ -25,6 +27,12 @@ Splits:
   nutrient : for each held-out nutrient family (nutrients with identical
              presence form one family; example dataset: 28 nutrients, 14 families), test = media containing it,
              train = media without it (never seen in training)
+  complex  : for each t in --max-train-nutr, train = media with <= t variable
+             nutrients, test = richer media (extrapolation to complex media)
+  lowdata  : 5-fold KFold as random, but only --n-train media drawn from each
+             training fold (learning curve; folds named n<size>_fold<k>);
+             AMN-NS epochs are scaled so every size gets the same number of
+             gradient steps as a full training fold
 
 --tune selects hyperparameters inside each training fold (nested): 20 % of the
 training media are held out for validation, every grid configuration is fitted
@@ -36,7 +44,8 @@ on the whole training fold. Grids: --betas x --uptakes (ns), --alphas x
 Dykstra steps at prediction time (columns y_pred_K<k>, box_viol_K<k>).
 
 Usage:
-    python amn_nullspace.py --model ns --split random --tag ns_random --param null
+    python amn_nullspace.py --model ns --split random --tag ns_random --plateau --epochs 100
+    python amn_nullspace.py --model ns --split complex --tag ns_complex --plateau --epochs 100
     python amn_nullspace.py --model ns --split random --tag ns_tuned --tune --seed 2
     python amn_nullspace.py --model fba --split nutrient --tag fba_nutrient
     python amn_nullspace.py --model ns --split random --tag other --trainingfile <path/dataset>
@@ -56,13 +65,19 @@ from Library.Build_Model import Neural_Model, model_input, train_model
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--model', choices=['ns', 'amn', 'mlp', 'fba'], required=True)
-ap.add_argument('--split', choices=['random', 'nutrient'], required=True)
+ap.add_argument('--split', choices=['random', 'nutrient', 'complex', 'lowdata'], required=True)
 ap.add_argument('--tag', required=True)
 ap.add_argument('--holdout', nargs='+', default=None,
                 help='variable-medium reaction ids to hold out (default: all 28)')
+ap.add_argument('--max-train-nutr', type=int, nargs='+', default=[10, 12, 14],
+                help='complex split: largest number of nutrients in a training medium')
+ap.add_argument('--n-train', type=int, nargs='+', default=[20, 40, 80],
+                help='lowdata split: training-set sizes')
 ap.add_argument('--epochs', type=int, default=1000)
-ap.add_argument('--param', choices=['flux', 'null'], default='flux',
+ap.add_argument('--param', choices=['flux', 'null'], default='null',
                 help='network output: fluxes, or null-space coordinates z (V0 = N z)')
+ap.add_argument('--encoder', choices=['relu', 'linear'], default='linear',
+                help='activation of the hidden layer (linear: V0 is linear in the medium)')
 ap.add_argument('--K', type=int, default=20, help='Dykstra iterations')
 ap.add_argument('--k-eval', type=int, nargs='+', default=[],
                 help='also predict with these numbers of Dykstra steps')
@@ -174,6 +189,16 @@ def splits():
     if args.split == 'random':
         kf = KFold(5, shuffle=True, random_state=args.seed)
         return [(f'fold{k}', tr, te) for k, (tr, te) in enumerate(kf.split(X))]
+    if args.split == 'complex':
+        n = X.sum(1)
+        return [(f'le{t}', np.where(n <= t)[0], np.where(n > t)[0])
+                for t in args.max_train_nutr]
+    if args.split == 'lowdata':
+        kf = KFold(5, shuffle=True, random_state=args.seed)
+        rng = np.random.default_rng(args.seed)
+        folds = list(kf.split(X))
+        return [(f'n{m}_fold{k}', np.sort(rng.choice(tr, m, replace=False)), te)
+                for m in args.n_train for k, (tr, te) in enumerate(folds)]
     # nutrients are added in families (identical presence columns): 14 groups
     groups = {}
     for j, r in enumerate(var_ids):
@@ -220,7 +245,8 @@ def build_ns(red, cfg):
         return tf.matmul(tf.matmul(x, N), N, transpose_b=True)
 
     inputs = Input(shape=(X.shape[1],))
-    h = Dense(1000, activation='relu', kernel_initializer='random_normal')(inputs)
+    h = Dense(1000, activation=None if cfg['encoder'] == 'linear' else 'relu',
+              kernel_initializer='random_normal')(inputs)
     h = Dropout(0.25)(h)
     if cfg['param'] == 'null':
         z = Dense(red['N'].shape[1], kernel_initializer='random_normal',
@@ -251,7 +277,10 @@ def fit_ns(tr, te, cfg, seed):
     model, v0_model = build_ns(red, cfg)
     cb = [tf.keras.callbacks.ReduceLROnPlateau('loss', factor=0.5, patience=10,
                                                min_lr=1e-5)] if args.plateau else []
-    model.fit(X[tr], [y[tr], np.zeros(len(tr))], epochs=args.epochs,
+    epochs = args.epochs
+    if args.split == 'lowdata':  # same number of gradient steps as a full 5-fold training set
+        epochs = int(round(epochs * 0.8 * len(X) / len(tr)))
+    model.fit(X[tr], [y[tr], np.zeros(len(tr))], epochs=epochs,
               batch_size=10, callbacks=cb, verbose=0)
     g, viol = model.predict(X[te], verbose=0)
     res = {'y_pred': g[:, 0], 'box_viol': viol[:, 0]}
@@ -275,7 +304,8 @@ def configs():
     """Hyperparameter grid (one configuration when not tuning)."""
     if args.model == 'ns':
         betas, ups = (args.betas, args.uptakes) if args.tune else ([args.beta], [args.uptake])
-        return [dict(param=args.param, beta=b, uptake=u) for b, u in itertools.product(betas, ups)]
+        return [dict(param=args.param, encoder=args.encoder, beta=b, uptake=u)
+                for b, u in itertools.product(betas, ups)]
     if args.model == 'mlp':
         alphas, hids = (args.alphas, args.hiddens) if args.tune else ([args.alpha], [args.hidden])
         return [dict(alpha=a, hidden=h) for a, h in itertools.product(alphas, hids)]

@@ -63,11 +63,13 @@ the GEM) and the GEM as `<name>.xml`; pass `--trainingfile <path/name>`
 ├── fba_lambda.py               FBA baseline with the published lambda protocol
 ├── ablation_sv.py              AMN_QP with constraint-loss weight lambda
 ├── learning_curve_unified.py   MLR, MLP, AMN_QP learning curves
+├── plot_r2_summary.py          summary table and bar chart of section 5.2
 ├── results
 │   ├── nullspace               first AMN-NS comparison (single seed, ReLU encoder)
 │   ├── optim                   multi-seed and nested-tuning runs (random CV)
 │   ├── extrap                  simple-to-complex and low-data splits
 │   ├── tune                    nested tuning of beta, uptake bound and epochs
+│   ├── summary                 R² summary table (CSV) and bar chart (PNG)
 │   ├── fba_lambda              FBA growth for every lambda and medium
 │   ├── ablation                lambda ablation
 │   └── learning_curve          learning-curve logs
@@ -246,6 +248,11 @@ stoichiometry and medium-dependent bounds produce the nonlinear growth
 response. With a ReLU hidden layer the network can fit the training media
 without relying on the constraints, and it extrapolates worse.
 
+Summary of the three tests (`plot_r2_summary.py`; error bars: sd over
+seeds; FBA has no training and no seed):
+
+![R² of FBA, MLP and AMN-NS on test media](results/summary/r2_summary.png)
+
 *Tuning.* Nested selection inside each training fold (`--tune`; grid
 β ∈ {0.03, 0.1, 0.3} × u ∈ {5, 6.5, 10} × {100, 200} epochs, seed 1,
 `results/tune/run.sh`) gives, against the fixed settings with the same seed:
@@ -291,6 +298,8 @@ python amn_nullspace.py --model ns --split random --tag ns_tune --plateau --tune
 python amn_nullspace.py --model mlp --split random --tag mlp_random
 # FBA with the published protocol (uptake bound lambda for every compound present)
 python fba_lambda.py
+# summary table and bar chart (FBA, MLP, AMN-NS) from the prediction files
+python plot_r2_summary.py
 # another organism or dataset (GEM <path/name>.xml + training set <path/name>.npz)
 python amn_nullspace.py --model ns --split random --tag my_ns --plateau --epochs 100 \
     --trainingfile <path/name> --o2-id <O2 uptake id> \
@@ -308,6 +317,7 @@ model and the FBA growth rates are cached in `results/nullspace/`.
 | `ablation_sv.py` | AMN with constraint-loss weight λ ∈ {0, 1, 100, 1000}; reports R² and ‖SV‖ |
 | `amn_nullspace.py` | AMN-NS and baselines (MLP, FBA): random 5-fold CV, simple-to-complex and low-data splits, nested tuning (`--tune`) |
 | `fba_lambda.py` | FBA baseline of [1]: scan of the uptake bound λ, best and cross-validated R² |
+| `plot_r2_summary.py` | R² of FBA, MLP and AMN-NS on the learning curve, the ≤ 12-nutrient complex split and random CV: `results/summary/r2_summary.csv` and `r2_summary.png` |
 
 ### 5.4 References
 

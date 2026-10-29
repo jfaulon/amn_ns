@@ -247,11 +247,11 @@ test medium resembles a training medium in size.
 n media drawn from each training fold (AMN-NS epochs scaled so that every n
 gets the same number of gradient steps).
 
-| n training media | MLP | **AMN-NS** |
-|---|---|---|
-| 20 | 0.160 ± 0.114 | **0.178 ± 0.105** |
-| 40 | 0.431 ± 0.064 | **0.501 ± 0.037** |
-| 80 | 0.645 ± 0.013 | **0.669 ± 0.010** |
+| n training media | Linear regression | MLP | **AMN-NS** |
+|---|---|---|---|
+| 20 | −0.525 ± 0.609 | 0.160 ± 0.114 | **0.178 ± 0.105** |
+| 40 | 0.408 ± 0.026 | 0.431 ± 0.064 | **0.501 ± 0.037** |
+| 80 | 0.581 ± 0.035 | 0.645 ± 0.013 | **0.669 ± 0.010** |
 
 AMN-NS is the best model on interpolation, when extrapolating to richer
 media (with ≥ 130 training media) and when data are scarce (≥ 40 media). Linear regression alone does not extrapolate
@@ -261,9 +261,11 @@ stoichiometry and medium-dependent bounds produce the nonlinear growth
 response.
 
 Summary of the three tests (`plot_r2_summary.py`; error bars: sd over
-seeds; FBA has no training and no seed):
+seeds; FBA has no training and no seed, and linear regression has no seed
+dependence on the complex split; the negative R² of linear regression with
+20 media, fewer media than inputs, is written at the baseline):
 
-![R² of FBA, MLP and AMN-NS on test media](results/summary/r2_summary.png)
+![R² of FBA, linear regression, MLP and AMN-NS on test media](results/summary/r2_summary.png)
 
 *Tuning.* Nested selection inside each training fold (`--tune`; grid
 β ∈ {0.03, 0.1, 0.3} × u ∈ {5, 6.5, 10} × {100, 200} epochs, seed 1,
@@ -307,7 +309,7 @@ python amn_nullspace.py --model ns --split random --tag ns_tune --plateau --tune
 python amn_nullspace.py --model mlp --split random --tag mlp_random
 # FBA with the published protocol (uptake bound lambda for every compound present)
 python fba_lambda.py
-# summary table and bar chart (FBA, MLP, AMN-NS) from the prediction files
+# summary table and bar chart (FBA, linear regression, MLP, AMN-NS)
 python plot_r2_summary.py
 # another organism or dataset (GEM <path/name>.xml + training set <path/name>.npz)
 python amn_nullspace.py --model ns --split random --tag my_ns --plateau --epochs 100 \
@@ -326,7 +328,7 @@ model and the FBA growth rates are cached in `results/nullspace/`.
 | `ablation_sv.py` | AMN with constraint-loss weight λ ∈ {0, 1, 100, 1000}; reports R² and ‖SV‖ |
 | `amn_nullspace.py` | AMN-NS and baselines (MLP, FBA): random 5-fold CV, simple-to-complex and low-data splits, nested tuning (`--tune`) |
 | `fba_lambda.py` | FBA baseline of [1]: scan of the uptake bound λ, best and cross-validated R² |
-| `plot_r2_summary.py` | R² of FBA, MLP and AMN-NS on the learning curve, the ≤ 12-nutrient complex split and random CV: `results/summary/r2_summary.csv` and `r2_summary.png` |
+| `plot_r2_summary.py` | R² of FBA, linear regression, MLP and AMN-NS on the learning curve, the ≤ 12-nutrient complex split and random CV: `results/summary/r2_summary.csv` and `r2_summary.png` |
 
 ### 5.4 References
 
